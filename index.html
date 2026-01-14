@@ -1539,15 +1539,34 @@
 
         const amount = calculateTransactionAmount(tx, address);
 
-        // Extract from and to addresses with proper null checks
+        // Extract from and to addresses - prioritize parsed instructions
         let fromAddress = "N/A";
         let toAddress = "N/A";
 
-        // Add null checks before accessing transaction properties
-        if (tx?.transaction?.message?.accountKeys) {
+        // First, try to get from parsed instructions (most reliable)
+        if (tx?.transaction?.message?.instructions) {
+          for (const ix of tx.transaction.message.instructions) {
+            if (ix.parsed && ix.parsed.info) {
+              // System transfer
+              if (ix.parsed.type === "transfer" && ix.parsed.info.source && ix.parsed.info.destination) {
+                fromAddress = ix.parsed.info.source;
+                toAddress = ix.parsed.info.destination;
+                break;
+              }
+              // Token transfer
+              if (ix.parsed.info.authority && ix.parsed.info.destination) {
+                fromAddress = ix.parsed.info.authority;
+                toAddress = ix.parsed.info.destination;
+                break;
+              }
+            }
+          }
+        }
+
+        // Fallback: use account keys if parsed instructions not available
+        if (fromAddress === "N/A" && tx?.transaction?.message?.accountKeys) {
           const keys = tx.transaction.message.accountKeys;
-          fromAddress =
-            keys[0]?.pubkey?.toString() || String(keys[0]) || "N/A";
+          fromAddress = keys[0]?.pubkey?.toString() || String(keys[0]) || "N/A";
           toAddress = keys[1]?.pubkey?.toString() || String(keys[1]) || "N/A";
         }
 
@@ -1576,6 +1595,49 @@
         }
         txid = String(txid);
 
+        // Detect transaction type
+        let transactionType = "transfer";
+        const logMessages = tx.meta?.logMessages || [];
+
+        // Check for NFT mint
+        const isNFTMint = logMessages.some(log =>
+          log.includes("MintToCollectionV1") ||
+          log.includes("MintV1") ||
+          log.includes("Bubblegum") ||
+          (log.includes("Instruction: Mint") && !log.includes("MintTo") && !log.includes("JUP"))
+        );
+
+        if (isNFTMint) {
+          transactionType = "nft_mint";
+        }
+        // Check for token swap
+        else if (tx.meta?.preTokenBalances && tx.meta?.postTokenBalances) {
+          const preTokens = tx.meta.preTokenBalances;
+          const postTokens = tx.meta.postTokenBalances;
+
+          let hasTokenSent = false;
+          let hasTokenReceived = false;
+
+          for (const preTok of preTokens) {
+            const postTok = postTokens.find(p => p.accountIndex === preTok.accountIndex);
+            if (postTok) {
+              const preAmount = parseFloat(preTok.uiTokenAmount.amount);
+              const postAmount = parseFloat(postTok.uiTokenAmount.amount);
+
+              if (preAmount > postAmount && (preAmount - postAmount) > 0.000001) {
+                hasTokenSent = true;
+              }
+              if (postAmount > preAmount && (postAmount - preAmount) > 0.000001) {
+                hasTokenReceived = true;
+              }
+            }
+          }
+
+          if (hasTokenSent && hasTokenReceived) {
+            transactionType = "swap";
+          }
+        }
+
         return {
           txid: txid,
           time: tx.blockTime ? getFormattedTime(tx.blockTime) : "Unknown",
@@ -1586,6 +1648,9 @@
           sender: fromAddress,
           receiver: toAddress,
           address: address,
+          transactionType: transactionType,
+          typeLabel: transactionType === "swap" ? "Swap" : transactionType === "nft_mint" ? "NFT Mint" : "Transfer",
+
         };
       } catch (err) {
         console.error("Error in formatTransaction:", err);
@@ -1837,13 +1902,14 @@
                                             </div>
                                             <div class="grid gap-0-5 flex-1">
                                               <div class="flex align-center space-between flex-wrap">
-                                                <div class="transaction__type" style="font-weight: 500; margin-right: 8px;">
+                                                ${transactionDetails.transactionType === "transfer" ? `<div class="transaction__type" style="font-weight: 500; margin-right: 8px;">
                                                   ${transactionDetails.type ===
-            "out"
-            ? "Sent"
-            : "Received"
-          }
-                                                </div>
+              "out"
+              ? "Sent"
+              : "Received"
+            }
+                                                </div>` : ""}
+                                                ${transactionDetails.typeLabel ? `<span style="background: rgba(var(--text-color), 0.1); padding: 4px 8px; border-radius: 12px; font-size: 0.75rem; font-weight: 500; display: inline-flex; align-items: center; gap: 4px;"> ${transactionDetails.typeLabel}</span>` : ""}
                                                 <time style="color: rgba(var(--text-color), 0.6); font-size: 0.85rem;">${typeof transactionDetails.time ===
             "string"
             ? transactionDetails.time
@@ -1865,14 +1931,14 @@
                                                 </div>
                                               </div>
                                               <div class="flex flex-wrap gap-0-5 margin-top-0-5">
-                                                ${transactionDetails.sender
+                                                ${transactionDetails.transactionType === "transfer" && transactionDetails.sender
             ? `<div class="flex align-center gap-0-3">
                                                         <span style="font-size: 0.85rem; color: rgba(var(--text-color), 0.7);">From:</span>
                                                         <span class="address-from interactive" data-address="${transactionDetails.sender}" style="font-size: 0.85rem; color: var(--color-primary); cursor: pointer;">${fromAddress}</span>
                                                       </div>`
             : ""
           }
-                                                ${transactionDetails.receiver
+                                                ${transactionDetails.transactionType === "transfer" && transactionDetails.receiver
             ? `<div class="flex align-center gap-0-3">
                                                         <span style="font-size: 0.85rem; color: rgba(var(--text-color), 0.7);">To:</span>
                                                         <span class="address-to interactive" data-address="${transactionDetails.receiver}" style="font-size: 0.85rem; color: var(--color-primary); cursor: pointer;">${toAddress}</span>
@@ -2481,15 +2547,25 @@
             html`
                 <div class="tx-card" id="tx-status">
                   <!-- Status Header -->
-                  <div class="tx-status-header">
-                    <div
-                      id="tx_status_indicator"
-                      class="status-indicator"
-                    ></div>
-                    <div class="status-details">
-                      <h3 id="tx_status_title" class="status-title"></h3>
-                      <p id="tx_status_subtext" class="status-subtext"></p>
+                  <div class="tx-status-header" style="display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 1rem;">
+                    <div style="display: flex; align-items: center; gap: 1rem; flex: 1; min-width: 200px;">
+                      <div
+                        id="tx_status_indicator"
+                        class="status-indicator"
+                      ></div>
+                      <div class="status-details">
+                        <h3 id="tx_status_title" class="status-title"></h3>
+                        <p id="tx_status_subtext" class="status-subtext"></p>
+                      </div>
                     </div>
+                    <a id="tx_explorer_link_header" href="#" target="_blank" rel="noopener noreferrer" style="display: inline-flex; align-items: center; gap: 0.5rem; color: var(--color-primary); text-decoration: none; font-weight: 500; padding: 0.5rem 1rem; border: 1px solid rgba(var(--text-color), 0.2); border-radius: 8px; transition: all 0.2s; font-size: 0.9rem; white-space: nowrap;">
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                        <polyline points="15 3 21 3 21 9"></polyline>
+                        <line x1="10" y1="14" x2="21" y2="3"></line>
+                      </svg>
+                      View on Solscan
+                    </a>
                   </div>
 
                   <!-- Main Transaction Info -->
@@ -2514,6 +2590,13 @@
                       <label class="section-label">Transaction Signature</label>
                       <sm-copy id="tx_hash" class="hash-value"></sm-copy>
                     </div>
+
+                    <!-- Transaction Type -->
+                    <div class="tx-type-section" style="margin-top: 1rem;">
+                      <label class="section-label">Transaction Type</label>
+                      <div id="tx_type" style="font-weight: 600; font-size: 1rem; margin-top: 0.5rem; color: var(--color-primary);"></div>
+                    </div>
+
 
                     <!-- Metrics Grid -->
                     <div class="tx-metrics-grid">
@@ -2578,7 +2661,7 @@
               status === "confirmed" ? `Included in Slot #${tx.slot}` : "";
           }
 
-          
+
           // Extract sender and receiver from transaction
           let sender = "Unknown";
           let receiver = "Unknown";
@@ -2639,25 +2722,78 @@
             // If we found a token swap, use that instead of FROM/TO
             if (tokenSent && tokenReceived) {
               transactionType = "swap";
-              sender = `${tokenSent.symbol}`;
-              receiver = `${tokenReceived.symbol}`;
+
+              // Map of common token mint addresses to symbols
+              const tokenSymbolMap = {
+                "So11111111111111111111111111111111111111112": "SOL",
+                "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "USDC",
+                "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": "USDT",
+                "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263": "Bonk",
+                "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs": "Ether (Wormhole)",
+                "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So": "mSOL",
+                "7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj": "stSOL",
+                "SRMuApVNdxXokk5GT7XD5cUUgXMBCoAz2LHeuAoKWRt": "SRM",
+                "kinXdEcpDQeHPEuQnqmUgtYykqKGVFq6CeVX5iAHJq6": "KIN",
+                "orcaEKTdK7LKz57vaAYr9QeNsVEPfiu6QeMU1kektZE": "ORCA",
+                "RLBxxFkseAZ4RgJH3Sqn8jXxhmGoz9jWxDNJMh8pL7a": "RLB",
+                "MangoCzJ36AjZyKwVj3VnYU4GTonjfVEnJmvvWaxLac": "MNGO",
+                "SHDWyBxihqiCj6YekG2GUr7wqKLeLAMK1gHZck9pL6y": "SHDW",
+                "HZ1JovNiVvGrGNiiYvEozEVgZ58xaU3RKwX8eACQBCt3": "PYTH",
+                "JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN": "JUP",
+              };
+
+              // Get token symbols or use truncated addresses
+              const getTokenSymbol = (mint) => {
+                if (tokenSymbolMap[mint]) {
+                  return tokenSymbolMap[mint];
+                }
+                // Fallback to truncated address
+                if (mint.length > 20) {
+                  return mint.substring(0, 8) + "..." + mint.substring(mint.length - 4);
+                }
+                return mint;
+              };
+
+              sender = getTokenSymbol(tokenSent.mint);
+              receiver = getTokenSymbol(tokenReceived.mint);
             }
           }
 
           // If not a swap or NFT mint, try to find the transfer instruction
           if (transactionType === "transfer") {
+            // First priority: Check for parsed instructions (most reliable)
             for (const ix of instructions) {
-              if (ix.accounts && ix.accounts.length >= 2) {
-                if (ix.data) {
-                  try {
-                    const dataBytes = bs58.decode(ix.data);
-                    if (dataBytes[0] === 2) {
-                      sender = accountKeys[ix.accounts[0]]?.toString() || "Unknown";
-                      receiver = accountKeys[ix.accounts[1]]?.toString() || "Unknown";
-                      break;
+              if (ix.parsed && ix.parsed.info) {
+                // System transfer
+                if (ix.parsed.type === "transfer" && ix.parsed.info.source && ix.parsed.info.destination) {
+                  sender = ix.parsed.info.source;
+                  receiver = ix.parsed.info.destination;
+                  break;
+                }
+                // Token transfer  
+                if (ix.parsed.info.authority && ix.parsed.info.destination) {
+                  sender = ix.parsed.info.authority;
+                  receiver = ix.parsed.info.destination;
+                  break;
+                }
+              }
+            }
+
+            // Second priority: Try raw instruction decoding
+            if (sender === "Unknown") {
+              for (const ix of instructions) {
+                if (ix.accounts && ix.accounts.length >= 2) {
+                  if (ix.data) {
+                    try {
+                      const dataBytes = bs58.decode(ix.data);
+                      if (dataBytes[0] === 2) {
+                        sender = accountKeys[ix.accounts[0]]?.toString() || "Unknown";
+                        receiver = accountKeys[ix.accounts[1]]?.toString() || "Unknown";
+                        break;
+                      }
+                    } catch (e) {
+                      // If decode fails, continue
                     }
-                  } catch (e) {
-                    // If decode fails, continue
                   }
                 }
               }
@@ -2718,7 +2854,32 @@
                 : "Address unknown";
           }
 
+          // Hide FROM/TO section for swaps and NFT mints
+          const addressSection = document.querySelector(".tx-address-section");
+          if (addressSection) {
+            if (transactionType === "swap" || transactionType === "nft_mint") {
+              addressSection.style.display = "none";
+            } else {
+              addressSection.style.display = "flex";
+            }
+          }
+
           if (getRef("tx_hash")) getRef("tx_hash").value = txId;
+
+          // Set transaction type label
+          if (getRef("tx_type")) {
+            const typeLabels = {
+              "swap": "Swap",
+              "nft_mint": "NFT Mint",
+              "transfer": "Transfer"
+            };
+            getRef("tx_type").textContent = typeLabels[transactionType] || "Transfer";
+          }
+
+          // Set explorer link
+          if (getRef("tx_explorer_link_header")) {
+            getRef("tx_explorer_link_header").href = `https://solscan.io/tx/${txId}`;
+          }
 
           if (getRef("tx_value")) {
             getRef("tx_value").dataset.sol = value;
