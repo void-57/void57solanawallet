@@ -3243,7 +3243,7 @@
                 </div>
                 <sm-input
                   id="private_key_input"
-                  placeholder="Sender's Solana Seed OR Bitcoin Private Key OR FLO Private Key"
+                  placeholder="Sender's Solana Seed OR BTC OR FLO Private Key"
                   oninput=${handleSenderInput}
                   data-private-key
                   class="password-field"
@@ -3381,7 +3381,7 @@
       target.focusIn();
     }
 
-    function checkSenderBalance() {
+  function checkSenderBalance() {
       let address;
       const secret = getRef("private_key_input").value;
       const privateKey = floSolana.solanaPrivateKey2UsableInCode(secret);
@@ -3404,39 +3404,34 @@
       const promises = [getWalletBalance(address)];
 
       Promise.all(promises)
-        .then(([solBalance, tokenBalance]) => {
+        .then(([solBalance]) => {
+          const solAmount = solBalance / solanaWeb3.LAMPORTS_PER_SOL;
           renderElem(
             getRef("sender_balance_container"),
             html`
-                <div
-                  class="grid gap-1 w-100"
-                  style="padding: 1rem; border-radius: 0.5rem; border: solid thin rgba(var(--text-color),0.3)"
-                >
-                  <div class="grid">
-                    <p class="label">Sender address</p>
-                    <sm-copy value=${address}
-                      ><p>${address}</p>
-                      <p></p
-                    ></sm-copy>
-                  </div>
-                  <p>
-                    Balance:
-                    <b class="amount-shown">${solBalance} SOL</b>
-                    ${selectedAsset !== "sol"
-                ? html`|
-                          <b class="amount-shown"
-                            >${tokenBalance} ${selectedAsset.toUpperCase()}</b
-                          >`
-                : ""}
-                  </p>
+              <div
+                class="grid gap-1 w-100"
+                style="padding: 1rem; border-radius: 0.5rem; border: solid thin rgba(var(--text-color),0.3)"
+              >
+                <div class="grid">
+                  <p class="label">Sender address</p>
+                  <sm-copy value=${address}
+                    ><p>${address}</p>
+                    <p></p
+                  ></sm-copy>
                 </div>
-              `
+                <p>
+                  Balance:
+                  <b class="amount-shown">${solAmount.toFixed(9)} SOL</b>
+                </p>
+              </div>
+            `
           );
         })
         .catch((err) => {
           notify(err, "error");
         });
-    }
+}
     function handleSenderInput(e) {
       getRef("check_balance_button").disabled = !e.target.isValid;
       if (!e.target.isValid) {
