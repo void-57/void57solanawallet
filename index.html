@@ -3532,8 +3532,9 @@
                     </div>
                   </div>
                 </div>
-                <div class="multi-state-button margin-top-1">
-                  <button id="buy_tx_button" class="button button--primary" type="submit" disabled onclick="buyTx()">
+                  <p id="sol_fee_warning" class="text-small hidden" style="margin: 0.5rem 0; color: var(--color-danger, #ff4b4b);"></p>
+                  <div class="multi-state-button margin-top-1">
+                    <button id="buy_tx_button" class="button button--primary" type="submit" disabled onclick="buyTx()">
                     Buy Token
                   </button>
                 </div>
@@ -3662,6 +3663,52 @@
           );
         }
 
+        let feeWarnDebounce = null;
+        const feeEstimateCache = { key: "", value: null, at: 0 };
+        function scheduleFeeWarning() {
+          clearTimeout(feeWarnDebounce);
+          feeWarnDebounce = setTimeout(refreshSolFeeWarning, 800);
+        }
+        async function refreshSolFeeWarning() {
+          const warnEl = getRef("sol_fee_warning");
+          if (!warnEl) return;
+          const hide = () => warnEl.classList.add("hidden");
+          try {
+            const secret = getRef("buy_private_key_input").value.trim();
+            if (!secret) return hide();
+            let kp;
+            try {
+              kp = solanaWeb3.Keypair.fromSecretKey(floSolana.solanaPrivateKey2UsableInCode(secret));
+            } catch {
+              return hide();
+            }
+            const usingExisting = preferredSpendMode === "existing";
+            const solAmount = parseFloat(getRef("buy_sol_amount").value.trim()) || 0;
+            if (!usingExisting && !(solAmount > 0)) return hide();
+            const cacheKey = kp.publicKey.toBase58() + "|" + (usingExisting ? "e" : "n") + "|" + Math.round(solAmount * 1e6);
+            const now = Date.now();
+            let required = null;
+            if (feeEstimateCache.key === cacheKey && now - feeEstimateCache.at < 30000 && feeEstimateCache.value !== null) {
+              required = feeEstimateCache.value;
+            } else {
+              const swapLamports = usingExisting ? 0n : BigInt(Math.round(solAmount * solanaWeb3.LAMPORTS_PER_SOL));
+              required = swapLamports + await estimateBuySolCost(kp.publicKey);
+              feeEstimateCache.key = cacheKey;
+              feeEstimateCache.value = required;
+              feeEstimateCache.at = now;
+            }
+            const solLamports = BigInt(await connection.getBalance(kp.publicKey));
+            if (solLamports < required) {
+              const shortSol = (Number(required - solLamports) / solanaWeb3.LAMPORTS_PER_SOL).toFixed(6);
+              warnEl.textContent = `Warning: low SOL for network fees. Top up ~${shortSol} SOL to proceed.`;
+              warnEl.classList.remove("hidden");
+            } else hide();
+          } catch (e) {
+            console.warn("Fee warning check failed:", e);
+            hide();
+          }
+        }
+
         function updateBuyButtonState() {
           const pkValid = getRef("buy_private_key_input").isValid;
           const mintValid = getRef("buy_token_mint").isValid;
@@ -3682,6 +3729,7 @@
           getRef("buy_tx_button").disabled =
             !(pkValid && mintValid && amountValid && slippageValid && !detectingTsmx);
           setFiatHint(getRef("buy_sol_amount"), getRef("buy_sol_fiat"));
+          scheduleFeeWarning();
         }
 
         function validateBuyForm() {
@@ -4227,9 +4275,10 @@
           if (solLamports < requiredLamports) {
             const requiredSol = (Number(requiredLamports) / solanaWeb3.LAMPORTS_PER_SOL).toFixed(6);
             const haveSol = (Number(solLamports) / solanaWeb3.LAMPORTS_PER_SOL).toFixed(6);
+            const shortSol = (Number(requiredLamports - solLamports) / solanaWeb3.LAMPORTS_PER_SOL).toFixed(6);
             if (useExisting) {
               return notify(
-                `Not enough SOL for network fees. This wallet has ${haveSol} SOL but needs about ${requiredSol} SOL. ` +
+                `Not enough SOL for network fees. This wallet has ${haveSol} SOL but needs about ${requiredSol} SOL (short by ~${shortSol} SOL). ` +
                 `Add SOL to this address to proceed with the swap.`,
                 "error"
               );
@@ -4237,7 +4286,7 @@
             return notify(
               `Not enough SOL. This buy needs about ${requiredSol} SOL total ` +
               `(swap amount + network fees + account setup for step 2). ` +
-              `This wallet has ${haveSol} SOL. Reduce the amount or top up.`,
+              `This wallet has ${haveSol} SOL (short by ~${shortSol} SOL). Reduce the amount or top up.`,
               "error"
             );
           }
@@ -4320,6 +4369,7 @@
           existingTsmxBalance = 0n;
           existingTsmxDecimals = 6;
           applySpendModeUI(false);
+          refreshSolFeeWarning();
         } catch (e) {
           console.error("Buy error:", e);
           let description = e.message;
