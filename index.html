@@ -3831,6 +3831,11 @@
           if (amountValid && tokenId !== "SOL") amountValid = !!entry && ui <= entry.uiAmount + 1e-9;
           getRef("transfer_send_button").disabled = !(pkValid && recvValid && amountValid);
           setFiatHint(tokenId === "SOL" ? getRef("transfer_amount") : null, getRef("transfer_amount_fiat"));
+          const trAmtInput = getRef("transfer_amount");
+          if (trAmtInput) {
+            const trLblEntry = tokenId ? (transferTokens || []).find((t) => t.id === tokenId) : null;
+            trAmtInput.setAttribute("placeholder", trLblEntry ? `${trLblEntry.symbol} Amount to Send` : "Amount to Send");
+          }
           const trBalEl = getRef("transfer_token_balance");
           if (trBalEl) {
             const trEntry = tokenId ? (transferTokens || []).find((t) => t.id === tokenId) : null;
@@ -4092,6 +4097,11 @@
           getRef("check_buyer_balance_button").disabled = !pkValid;
           getRef("buy_tx_button").disabled = !(pkValid && mintValid && amountValid && slippageValid);
           setFiatHint(payId === "SOL" ? getRef("buy_pay_amount") : null, getRef("buy_sol_fiat"));
+          const buyAmtInput = getRef("buy_pay_amount");
+          if (buyAmtInput) {
+            const lblEntry = payId ? (buyPayTokens || []).find((t) => t.id === payId) : null;
+            buyAmtInput.setAttribute("placeholder", lblEntry ? `${lblEntry.symbol} Amount to Spend` : "Amount to Spend");
+          }
           const buyBalEl = getRef("buy_token_balance");
           if (buyBalEl) {
             const curEntry = payId ? (buyPayTokens || []).find((t) => t.id === payId) : null;
